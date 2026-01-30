@@ -33,6 +33,7 @@ def send_gcode(ser, command):
     """
     Send G-code command to printer and wait for acknowledgment.
     Based on robocam.py send_gcode function.
+    Returns True on success, False on error.
     """
     print(f'[log] sending "{command}"')
     ser.write((command + '\n').encode('utf-8'))
@@ -49,10 +50,10 @@ def send_gcode(ser, command):
                     response = raw_data.decode('latin-1', errors='ignore').strip()
                 print(f'[log] printer response: {response}')
                 if "ok" in response.lower():  # Assuming 'ok' is the acknowledgment from the printer
-                    break
+                    return True
                 elif "error" in response.lower():  # Handle potential error messages
                     print(f"Error from printer: {response}")
-                    break
+                    return False
             except Exception as e:
                 # If decoding completely fails, just continue waiting
                 print(f'[log] decode error: {e}')
@@ -452,22 +453,37 @@ def main():
             # Determine increment
             increment = float(event.replace(' mm', '').replace('+', ''))
             
-            # Get current position
+            # Get current position from printer to ensure accuracy
+            pos = get_current_position(ser)
+            if pos:
+                current_x, current_y, current_z = pos["X"], pos["Y"], pos["Z"]
+            
+            # Calculate new position
             current = current_x if axis == 'X' else current_y if axis == 'Y' else current_z
             new_value = round(current + increment, 2)
             
-            # Move
+            # Ensure absolute positioning mode (G90) is set
+            send_gcode(ser, "G90")
+            
+            # Move to new position
             command = f"G1 {axis}{new_value} F3000"
             if send_gcode(ser, command):
-                # Update current position
-                if axis == 'X':
-                    current_x = new_value
-                elif axis == 'Y':
-                    current_y = new_value
+                # Query actual position from printer after movement
+                pos = get_current_position(ser)
+                if pos:
+                    current_x, current_y, current_z = pos["X"], pos["Y"], pos["Z"]
+                    window["-CURRENT_POS-"].update(f"Current Position: X={current_x:.2f}, Y={current_y:.2f}, Z={current_z:.2f}")
                 else:
-                    current_z = new_value
-                
-                window["-CURRENT_POS-"].update(f"Current Position: X={current_x:.2f}, Y={current_y:.2f}, Z={current_z:.2f}")
+                    # Fallback: update based on expected position
+                    if axis == 'X':
+                        current_x = new_value
+                    elif axis == 'Y':
+                        current_y = new_value
+                    else:
+                        current_z = new_value
+                    window["-CURRENT_POS-"].update(f"Current Position: X={current_x:.2f}, Y={current_y:.2f}, Z={current_z:.2f}")
+            else:
+                sg.popup_error("Movement command failed. Check printer connection.", title="Error")
         
         # Set corners from printer position
         elif event == "-SET_TL-" and ser:
