@@ -39,15 +39,68 @@ def init_camera():
     """Initialize Pi Camera."""
     global picam2
     try:
+        # Initialize camera object
         picam2 = Picamera2()
-        still_config = picam2.create_video_configuration(
-            main={'size': DEFAULT_SIZE, 'format': 'BGR888'}
-        )
+        
+        # Small delay to ensure camera is ready
+        time.sleep(0.1)
+        
+        # Create video configuration - this is where the error often occurs
+        # The error "list index out of range" can happen if camera controls
+        # are not yet available or camera is not properly detected
+        try:
+            still_config = picam2.create_video_configuration(
+                main={'size': DEFAULT_SIZE, 'format': 'BGR888'}
+            )
+        except (IndexError, AttributeError) as e:
+            print(f"Error creating video configuration: {e}")
+            # Try alternative: preview configuration
+            try:
+                print("Trying preview configuration instead...")
+                still_config = picam2.create_preview_configuration(
+                    main={'size': DEFAULT_SIZE, 'format': 'BGR888'}
+                )
+            except Exception as e2:
+                print(f"Error creating preview configuration: {e2}")
+                # Try minimal configuration
+                try:
+                    print("Trying minimal configuration...")
+                    still_config = picam2.create_preview_configuration()
+                except Exception as e3:
+                    print(f"Error creating minimal configuration: {e3}")
+                    return False
+        
+        # Configure and start camera
         picam2.configure(still_config)
         picam2.start()
+        
+        # Give camera a moment to start
+        time.sleep(0.5)
+        
         return True
+    except IndexError as e:
+        print(f"Error initializing camera (list index out of range): {e}")
+        print("This usually means no camera is detected or camera is not ready.")
+        print("Troubleshooting steps:")
+        print("  1. Check camera connection")
+        print("  2. Ensure no other process is using the camera")
+        print("  3. Try: sudo systemctl restart libcamera")
+        print("  4. Check: libcamera-hello --list-cameras")
+        if picam2:
+            try:
+                picam2.close()
+            except:
+                pass
+        return False
     except Exception as e:
         print(f"Error initializing camera: {e}")
+        import traceback
+        traceback.print_exc()
+        if picam2:
+            try:
+                picam2.close()
+            except:
+                pass
         return False
 
 def get_camera_frame():
