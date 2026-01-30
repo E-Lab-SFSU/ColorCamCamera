@@ -24,7 +24,10 @@ import json
 import re
 from datetime import datetime
 
-# ===== Printer Control Functions (from XYZGUI.py) =====
+# ===== Configuration =====
+DEFAULT_BAUD_RATE = 250000  # Match robocam.py baudrate
+
+# ===== Printer Control Functions (based on robocam.py) =====
 
 def send_gcode(ser, command):
     """
@@ -56,7 +59,7 @@ def send_gcode(ser, command):
                 time.sleep(0.01)
                 continue
 
-def find_serial_port(baud_rate=115200):
+def find_serial_port(baud_rate=DEFAULT_BAUD_RATE):
     """Find and return the first available USB serial port.
     Based on robocam.py find_serial_port function.
     """
@@ -78,7 +81,7 @@ def find_serial_port(baud_rate=115200):
     print("No available ports responded.")
     return None
 
-def wait_for_connection(serial_port, baud_rate=115200):
+def wait_for_connection(serial_port, baud_rate=DEFAULT_BAUD_RATE):
     """Attempt to open a serial connection and wait until it is established.
     Based on robocam.py wait_for_connection function.
     """
