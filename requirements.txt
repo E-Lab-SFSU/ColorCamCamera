@@ -1,0 +1,7 @@
+FreeSimpleGUI
+pyserial
+Pillow
+numpy
+matplotlib
+picamera2
+
