@@ -25,36 +25,74 @@ from datetime import datetime
 
 # ===== Printer Control Functions (from XYZGUI.py) =====
 
-def send_gcode(ser, command):
+def send_gcode(ser, command, timeout=10.0):
     """
     Send G-code command to printer and wait for acknowledgment.
     Based on XYZGUI.py send_gcode function.
+    
+    Args:
+        ser: Serial connection object
+        command: G-code command string
+        timeout: Maximum time to wait for response (seconds)
+    
+    Returns:
+        True if command succeeded, False if failed or timed out
     """
-    ser.write((command + '\n').encode('utf-8'))
-    time.sleep(0.1)  # Initial delay for command processing
-    while True:
-        if ser.in_waiting > 0:
-            try:
-                # Read raw bytes and decode with error handling
-                raw_data = ser.readline()
-                # Try UTF-8 first, fallback to latin-1 (which can decode any byte)
+    try:
+        # Clear any pending data in buffer
+        ser.reset_input_buffer()
+        
+        # Send command
+        ser.write((command + '\n').encode('utf-8'))
+        ser.flush()  # Ensure command is sent immediately
+        
+        # For homing commands, use longer timeout
+        if command.strip().upper().startswith('G28'):
+            timeout = 60.0  # Homing can take up to 60 seconds
+        
+        start_time = time.time()
+        response_received = False
+        
+        while (time.time() - start_time) < timeout:
+            if ser.in_waiting > 0:
                 try:
-                    response = raw_data.decode('utf-8').strip()
-                except UnicodeDecodeError:
-                    # Fallback to latin-1 which can decode any byte sequence
-                    response = raw_data.decode('latin-1', errors='ignore').strip()
-                
-                # Check for acknowledgment or error
-                response_lower = response.lower()
-                if "ok" in response_lower:
-                    break
-                elif "error" in response_lower:
-                    return False  # Error occurred
-            except Exception:
-                # If decoding completely fails, just continue waiting
-                time.sleep(0.01)
-                continue
-    return True
+                    # Read raw bytes and decode with error handling
+                    raw_data = ser.readline()
+                    # Try UTF-8 first, fallback to latin-1 (which can decode any byte)
+                    try:
+                        response = raw_data.decode('utf-8').strip()
+                    except UnicodeDecodeError:
+                        # Fallback to latin-1 which can decode any byte sequence
+                        response = raw_data.decode('latin-1', errors='ignore').strip()
+                    
+                    # Print response for debugging
+                    if response:
+                        print(f"Printer response: {response}")
+                    
+                    # Check for acknowledgment or error
+                    response_lower = response.lower()
+                    if "ok" in response_lower:
+                        response_received = True
+                        break
+                    elif "error" in response_lower:
+                        print(f"Printer error: {response}")
+                        return False  # Error occurred
+                except Exception as e:
+                    # If decoding completely fails, just continue waiting
+                    print(f"Decode error: {e}")
+                    time.sleep(0.01)
+                    continue
+            else:
+                time.sleep(0.05)  # Small delay when no data available
+        
+        if not response_received:
+            print(f"Timeout waiting for response to command: {command}")
+            return False
+        
+        return True
+    except Exception as e:
+        print(f"Error sending G-code command '{command}': {e}")
+        return False
 
 def find_serial_port():
     """Find and return the first available USB serial port."""
@@ -383,16 +421,49 @@ def main():
             if serial_port:
                 ser = wait_for_connection(serial_port)
                 if ser:
-                    window["-PRINTER_STATUS-"].update(f"Connected: {serial_port}")
-                    window["-HOME-"].update(disabled=False)
-                    window["-GET_POS-"].update(disabled=False)
-                    # Enable movement buttons
-                    for key in ['+0.1', '+1', '+10', '-0.1', '-1', '-10']:
-                        window[key].update(disabled=False)
-                    # Enable corner setting buttons
-                    for key in ["-SET_TL-", "-SET_BL-", "-SET_TR-", "-SET_BR-"]:
-                        window[key].update(disabled=False)
-                    window["-CONNECT-"].update(disabled=True)
+                    # Test connection with a simple command
+                    window["-PRINTER_STATUS-"].update("Testing connection...")
+                    window.refresh()
+                    time.sleep(0.5)  # Give printer time to initialize
+                    
+                    # Try to get firmware info (M115) or position (M114) to verify communication
+                    print(f"Testing printer communication on {serial_port}...")
+                    test_success = False
+                    
+                    # Try M115 first (firmware info - doesn't require movement)
+                    if send_gcode(ser, "M115", timeout=5.0):
+                        test_success = True
+                        print("Printer communication verified with M115")
+                    # Fallback to M114 (get position)
+                    elif send_gcode(ser, "M114", timeout=5.0):
+                        test_success = True
+                        print("Printer communication verified with M114")
+                    
+                    if test_success:
+                        window["-PRINTER_STATUS-"].update(f"Connected: {serial_port}")
+                        window["-HOME-"].update(disabled=False)
+                        window["-GET_POS-"].update(disabled=False)
+                        # Enable movement buttons
+                        for key in ['+0.1', '+1', '+10', '-0.1', '-1', '-10']:
+                            window[key].update(disabled=False)
+                        # Enable corner setting buttons
+                        for key in ["-SET_TL-", "-SET_BL-", "-SET_TR-", "-SET_BR-"]:
+                            window[key].update(disabled=False)
+                        window["-CONNECT-"].update(disabled=True)
+                        print("Printer connection successful!")
+                    else:
+                        window["-PRINTER_STATUS-"].update("Connected but not responding")
+                        ser.close()
+                        ser = None
+                        sg.popup_error(
+                            "Connected to serial port but printer not responding.\n\n"
+                            "Possible causes:\n"
+                            "- Wrong baud rate\n"
+                            "- Printer not powered on\n"
+                            "- Wrong serial port\n"
+                            "- Check terminal for error messages",
+                            title="Connection Error"
+                        )
                 else:
                     window["-PRINTER_STATUS-"].update("Connection failed")
                     sg.popup_error("Failed to connect to printer", title="Error")
@@ -402,17 +473,49 @@ def main():
         
         # Home printer
         elif event == "-HOME-" and ser:
-            window["-PRINTER_STATUS-"].update("Homing...")
+            window["-PRINTER_STATUS-"].update("Homing... (this may take up to 60 seconds)")
             window.refresh()
-            if send_gcode(ser, "G28"):
-                window["-PRINTER_STATUS-"].update("Homed")
+            
+            # Try G28 first (home all axes)
+            print("Sending G28 (home all axes)...")
+            success = send_gcode(ser, "G28", timeout=60.0)
+            
+            if not success:
+                # Try alternative: home each axis separately
+                print("G28 failed, trying individual axis homing...")
+                window["-PRINTER_STATUS-"].update("Homing X axis...")
+                window.refresh()
+                if send_gcode(ser, "G28 X", timeout=30.0):
+                    window["-PRINTER_STATUS-"].update("Homing Y axis...")
+                    window.refresh()
+                    if send_gcode(ser, "G28 Y", timeout=30.0):
+                        window["-PRINTER_STATUS-"].update("Homing Z axis...")
+                        window.refresh()
+                        if send_gcode(ser, "G28 Z", timeout=30.0):
+                            success = True
+            
+            if success:
+                window["-PRINTER_STATUS-"].update("Homed successfully")
+                # Wait a moment for printer to settle
+                time.sleep(0.5)
                 # Get position after homing
                 pos = get_current_position(ser)
                 if pos:
                     current_x, current_y, current_z = pos["X"], pos["Y"], pos["Z"]
                     window["-CURRENT_POS-"].update(f"Current Position: X={current_x:.2f}, Y={current_y:.2f}, Z={current_z:.2f}")
+                else:
+                    window["-PRINTER_STATUS-"].update("Homed (position unknown)")
             else:
-                window["-PRINTER_STATUS-"].update("Homing failed")
+                window["-PRINTER_STATUS-"].update("Homing failed - check printer")
+                sg.popup_error(
+                    "Homing failed!\n\n"
+                    "Possible causes:\n"
+                    "- Printer not responding\n"
+                    "- Endstops not working\n"
+                    "- Serial communication issue\n"
+                    "- Check terminal for error messages",
+                    title="Homing Error"
+                )
         
         # Get current position
         elif event == "-GET_POS-" and ser:
