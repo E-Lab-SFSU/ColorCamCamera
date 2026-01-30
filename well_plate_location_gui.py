@@ -21,180 +21,109 @@ import serial
 import serial.tools.list_ports
 import time
 import json
+import re
 from datetime import datetime
 
 # ===== Printer Control Functions (from XYZGUI.py) =====
 
-def send_gcode(ser, command, timeout=10.0):
+def send_gcode(ser, command):
     """
     Send G-code command to printer and wait for acknowledgment.
-    Based on XYZGUI.py send_gcode function.
-    
-    Args:
-        ser: Serial connection object
-        command: G-code command string
-        timeout: Maximum time to wait for response (seconds)
-    
-    Returns:
-        True if command succeeded, False if failed or timed out
+    Based on robocam.py send_gcode function.
     """
-    try:
-        # Clear any pending data in buffer
-        ser.reset_input_buffer()
-        
-        # Send command
-        ser.write((command + '\n').encode('utf-8'))
-        ser.flush()  # Ensure command is sent immediately
-        
-        # For homing commands, use longer timeout
-        if command.strip().upper().startswith('G28'):
-            timeout = 60.0  # Homing can take up to 60 seconds
-        
-        start_time = time.time()
-        response_received = False
-        
-        while (time.time() - start_time) < timeout:
-            if ser.in_waiting > 0:
-                try:
-                    # Read raw bytes and decode with error handling
-                    raw_data = ser.readline()
-                    # Try UTF-8 first, fallback to latin-1 (which can decode any byte)
-                    try:
-                        response = raw_data.decode('utf-8').strip()
-                    except UnicodeDecodeError:
-                        # Fallback to latin-1 which can decode any byte sequence
-                        response = raw_data.decode('latin-1', errors='ignore').strip()
-                    
-                    # Print response for debugging
-                    if response:
-                        print(f"Printer response: {response}")
-                    
-                    # Check for acknowledgment or error
-                    response_lower = response.lower()
-                    if "ok" in response_lower:
-                        response_received = True
-                        break
-                    elif "error" in response_lower:
-                        print(f"Printer error: {response}")
-                        return False  # Error occurred
-                except Exception as e:
-                    # If decoding completely fails, just continue waiting
-                    print(f"Decode error: {e}")
-                    time.sleep(0.01)
-                    continue
-            else:
-                time.sleep(0.05)  # Small delay when no data available
-        
-        if not response_received:
-            print(f"Timeout waiting for response to command: {command}")
-            return False
-        
-        return True
-    except Exception as e:
-        print(f"Error sending G-code command '{command}': {e}")
-        return False
+    print(f'[log] sending "{command}"')
+    ser.write((command + '\n').encode('utf-8'))
+    time.sleep(0.1)  # Initial delay for command processing
+    while True:
+        if ser.in_waiting > 0:  # Check if there's data waiting to be read
+            response = ser.readline().decode('utf-8').strip()
+            print(f'[log] printer response: {response}')
+            if "ok" in response.lower():  # Assuming 'ok' is the acknowledgment from the printer
+                break
+            elif "error" in response.lower():  # Handle potential error messages
+                print(f"Error from printer: {response}")
+                break
 
-def find_serial_port():
-    """Find and return the first available USB serial port."""
+def find_serial_port(baud_rate=115200):
+    """Find and return the first available USB serial port.
+    Based on robocam.py find_serial_port function.
+    """
     ports = serial.tools.list_ports.comports()
-    usb_ports = []
-    for port in ports:
-        device = port.device
-        description = port.description.upper() if port.description else ""
-        
-        # Check if it's a USB serial port
-        is_usb_serial = (
-            'ttyUSB' in device or 
-            'ttyACM' in device or 
-            'USB' in description or
-            'Serial' in description or
-            'CH340' in description or
-            'FTDI' in description or
-            'CP210' in description
-        )
-        
-        exclude = (
-            'BLUETOOTH' in description or
-            'ttyAMA0' in device or
-            'ttyS0' in device
-        )
-        
-        if is_usb_serial and not exclude:
-            usb_ports.append(port)
-    
+    usb_ports = [port for port in ports if 'USB' in port.description]
     if not usb_ports:
+        print("No USB serial ports found.")
         return None
-    
-    # Try each port
+
     for usb_port in usb_ports:
         try:
-            ser = serial.Serial(usb_port.device, 115200, timeout=1)
-            ser.close()
+            ser = serial.Serial(usb_port.device, baud_rate, timeout=1)
+            ser.close()  # Close the port now that we know it works
+            print(f"Selected port: {usb_port.device} - {usb_port.description}")
             return usb_port.device
         except serial.SerialException:
-            continue
-    
+            print(f"Failed to connect on {usb_port.device}")
+
+    print("No available ports responded.")
     return None
 
-def wait_for_connection(serial_port):
-    """Attempt to open a serial connection and wait until it is established."""
-    baud_rate = 115200
-    max_attempts = 10
-    attempt = 0
-    
-    while attempt < max_attempts:
+def wait_for_connection(serial_port, baud_rate=115200):
+    """Attempt to open a serial connection and wait until it is established.
+    Based on robocam.py wait_for_connection function.
+    """
+    while True:
         try:
             ser = serial.Serial(serial_port, baud_rate, timeout=1)
+            print(f"Connected to {serial_port} at {baud_rate} baud. Allow 10 seconds for printer to load.")
+            time.sleep(10)
+            # Dump printer output on startup
+            dump_printer_output(ser)
             return ser
         except serial.SerialException:
-            attempt += 1
-            if attempt >= max_attempts:
-                return None
-            time.sleep(2)
-    return None
+            print(f"Waiting for connection on {serial_port}...")
+            time.sleep(2)  # Wait a bit before trying to connect again
+
+def dump_printer_output(ser):
+    """Dump any pending printer output.
+    Based on robocam.py dump_printer_output function.
+    """
+    while ser.in_waiting > 0:  # Check if there's data waiting to be read
+        response = ser.readline().decode('utf-8').strip()
+        print(f'[log] printer output, dumping: {response}')
 
 def get_current_position(ser):
     """
     Get current printer position by sending M114 (Get Current Position).
-    Returns (X, Y, Z) or None if failed.
+    Based on robocam.py update_current_position function.
+    Returns dict with X, Y, Z or None if failed.
     """
-    try:
-        ser.write(b'M114\n')
-        time.sleep(0.2)
-        
-        # Read response
-        position = {"X": None, "Y": None, "Z": None}
-        timeout = time.time() + 2.0  # 2 second timeout
-        
-        while time.time() < timeout:
-            if ser.in_waiting > 0:
-                try:
-                    raw_data = ser.readline()
-                    try:
-                        response = raw_data.decode('utf-8').strip()
-                    except UnicodeDecodeError:
-                        response = raw_data.decode('latin-1', errors='ignore').strip()
-                    
-                    # Parse M114 response: "X:100.00 Y:200.00 Z:50.00 E:0.00 Count X:0 Y:0 Z:0"
-                    if "X:" in response:
-                        parts = response.split()
-                        for part in parts:
-                            if part.startswith("X:"):
-                                position["X"] = float(part[2:])
-                            elif part.startswith("Y:"):
-                                position["Y"] = float(part[2:])
-                            elif part.startswith("Z:"):
-                                position["Z"] = float(part[2:])
-                        
-                        if all(v is not None for v in position.values()):
-                            return position
-                except Exception:
-                    continue
-            time.sleep(0.01)
-        
-        return None
-    except Exception:
-        return None
+    print(f'[log] updating current position')
+    # Manually sending command because send_gcode dumps all output before "ok" response
+    command = "M114"
+    ser.write((command + '\n').encode('utf-8'))
+    time.sleep(0.1)  # Initial delay for command processing
+    # Parse printer's response
+    while True:
+        response = ser.readline().decode('utf-8').strip()
+        print(f'[log] printer response: {response}')
+        if response.startswith('X:'):
+            break
+        time.sleep(0.1)
+    
+    position = {}
+    matches = re.findall(r'(X|Y|Z):([0-9.-]+)', response)
+    collected_axes = set()
+    for axis, value in matches:
+        try:
+            if axis not in collected_axes:
+                position[axis] = float(value)
+                collected_axes.add(axis)
+        except ValueError:
+            continue
+    
+    # Dump any remaining output
+    dump_printer_output(ser)
+    
+    return position if len(position) == 3 else None
 
 # ===== Well Position Calculation (from auto_blank_capture.py) =====
 
@@ -421,49 +350,30 @@ def main():
             if serial_port:
                 ser = wait_for_connection(serial_port)
                 if ser:
-                    # Test connection with a simple command
-                    window["-PRINTER_STATUS-"].update("Testing connection...")
+                    # Initialize printer communication (based on robocam.py)
+                    window["-PRINTER_STATUS-"].update("Initializing printer...")
                     window.refresh()
-                    time.sleep(0.5)  # Give printer time to initialize
                     
-                    # Try to get firmware info (M115) or position (M114) to verify communication
-                    print(f"Testing printer communication on {serial_port}...")
-                    test_success = False
+                    # Send M105 to announce control via serial (like robocam.py)
+                    send_gcode(ser, "M105")
                     
-                    # Try M115 first (firmware info - doesn't require movement)
-                    if send_gcode(ser, "M115", timeout=5.0):
-                        test_success = True
-                        print("Printer communication verified with M115")
-                    # Fallback to M114 (get position)
-                    elif send_gcode(ser, "M114", timeout=5.0):
-                        test_success = True
-                        print("Printer communication verified with M114")
+                    # Update current position
+                    pos = get_current_position(ser)
+                    if pos:
+                        current_x, current_y, current_z = pos["X"], pos["Y"], pos["Z"]
+                        window["-CURRENT_POS-"].update(f"Current Position: X={current_x:.2f}, Y={current_y:.2f}, Z={current_z:.2f}")
                     
-                    if test_success:
-                        window["-PRINTER_STATUS-"].update(f"Connected: {serial_port}")
-                        window["-HOME-"].update(disabled=False)
-                        window["-GET_POS-"].update(disabled=False)
-                        # Enable movement buttons
-                        for key in ['+0.1', '+1', '+10', '-0.1', '-1', '-10']:
-                            window[key].update(disabled=False)
-                        # Enable corner setting buttons
-                        for key in ["-SET_TL-", "-SET_BL-", "-SET_TR-", "-SET_BR-"]:
-                            window[key].update(disabled=False)
-                        window["-CONNECT-"].update(disabled=True)
-                        print("Printer connection successful!")
-                    else:
-                        window["-PRINTER_STATUS-"].update("Connected but not responding")
-                        ser.close()
-                        ser = None
-                        sg.popup_error(
-                            "Connected to serial port but printer not responding.\n\n"
-                            "Possible causes:\n"
-                            "- Wrong baud rate\n"
-                            "- Printer not powered on\n"
-                            "- Wrong serial port\n"
-                            "- Check terminal for error messages",
-                            title="Connection Error"
-                        )
+                    window["-PRINTER_STATUS-"].update(f"Connected: {serial_port}")
+                    window["-HOME-"].update(disabled=False)
+                    window["-GET_POS-"].update(disabled=False)
+                    # Enable movement buttons
+                    for key in ['+0.1', '+1', '+10', '-0.1', '-1', '-10']:
+                        window[key].update(disabled=False)
+                    # Enable corner setting buttons
+                    for key in ["-SET_TL-", "-SET_BL-", "-SET_TR-", "-SET_BR-"]:
+                        window[key].update(disabled=False)
+                    window["-CONNECT-"].update(disabled=True)
+                    print("Printer connection successful!")
                 else:
                     window["-PRINTER_STATUS-"].update("Connection failed")
                     sg.popup_error("Failed to connect to printer", title="Error")
@@ -473,49 +383,22 @@ def main():
         
         # Home printer
         elif event == "-HOME-" and ser:
-            window["-PRINTER_STATUS-"].update("Homing... (this may take up to 60 seconds)")
+            print('Homing Printer, please wait for the countdown to complete')
+            window["-PRINTER_STATUS-"].update("Homing... (please wait)")
             window.refresh()
             
-            # Try G28 first (home all axes)
-            print("Sending G28 (home all axes)...")
-            success = send_gcode(ser, "G28", timeout=60.0)
+            # Send G28 homing command (based on robocam.py)
+            send_gcode(ser, 'G28')
             
-            if not success:
-                # Try alternative: home each axis separately
-                print("G28 failed, trying individual axis homing...")
-                window["-PRINTER_STATUS-"].update("Homing X axis...")
-                window.refresh()
-                if send_gcode(ser, "G28 X", timeout=30.0):
-                    window["-PRINTER_STATUS-"].update("Homing Y axis...")
-                    window.refresh()
-                    if send_gcode(ser, "G28 Y", timeout=30.0):
-                        window["-PRINTER_STATUS-"].update("Homing Z axis...")
-                        window.refresh()
-                        if send_gcode(ser, "G28 Z", timeout=30.0):
-                            success = True
-            
-            if success:
+            # Update position after homing
+            pos = get_current_position(ser)
+            if pos:
+                current_x, current_y, current_z = pos["X"], pos["Y"], pos["Z"]
                 window["-PRINTER_STATUS-"].update("Homed successfully")
-                # Wait a moment for printer to settle
-                time.sleep(0.5)
-                # Get position after homing
-                pos = get_current_position(ser)
-                if pos:
-                    current_x, current_y, current_z = pos["X"], pos["Y"], pos["Z"]
-                    window["-CURRENT_POS-"].update(f"Current Position: X={current_x:.2f}, Y={current_y:.2f}, Z={current_z:.2f}")
-                else:
-                    window["-PRINTER_STATUS-"].update("Homed (position unknown)")
+                window["-CURRENT_POS-"].update(f"Current Position: X={current_x:.2f}, Y={current_y:.2f}, Z={current_z:.2f}")
+                print(f"Printer homed. Reset positions to X: {current_x}, Y: {current_y}, Z: {current_z}")
             else:
-                window["-PRINTER_STATUS-"].update("Homing failed - check printer")
-                sg.popup_error(
-                    "Homing failed!\n\n"
-                    "Possible causes:\n"
-                    "- Printer not responding\n"
-                    "- Endstops not working\n"
-                    "- Serial communication issue\n"
-                    "- Check terminal for error messages",
-                    title="Homing Error"
-                )
+                window["-PRINTER_STATUS-"].update("Homed (position unknown)")
         
         # Get current position
         elif event == "-GET_POS-" and ser:
