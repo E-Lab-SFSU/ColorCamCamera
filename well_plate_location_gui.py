@@ -36,13 +36,25 @@ def send_gcode(ser, command):
     time.sleep(0.1)  # Initial delay for command processing
     while True:
         if ser.in_waiting > 0:  # Check if there's data waiting to be read
-            response = ser.readline().decode('utf-8').strip()
-            print(f'[log] printer response: {response}')
-            if "ok" in response.lower():  # Assuming 'ok' is the acknowledgment from the printer
-                break
-            elif "error" in response.lower():  # Handle potential error messages
-                print(f"Error from printer: {response}")
-                break
+            try:
+                raw_data = ser.readline()
+                # Try UTF-8 first, fallback to latin-1 (which can decode any byte)
+                try:
+                    response = raw_data.decode('utf-8').strip()
+                except UnicodeDecodeError:
+                    # Fallback to latin-1 which can decode any byte sequence
+                    response = raw_data.decode('latin-1', errors='ignore').strip()
+                print(f'[log] printer response: {response}')
+                if "ok" in response.lower():  # Assuming 'ok' is the acknowledgment from the printer
+                    break
+                elif "error" in response.lower():  # Handle potential error messages
+                    print(f"Error from printer: {response}")
+                    break
+            except Exception as e:
+                # If decoding completely fails, just continue waiting
+                print(f'[log] decode error: {e}')
+                time.sleep(0.01)
+                continue
 
 def find_serial_port(baud_rate=115200):
     """Find and return the first available USB serial port.
@@ -87,8 +99,19 @@ def dump_printer_output(ser):
     Based on robocam.py dump_printer_output function.
     """
     while ser.in_waiting > 0:  # Check if there's data waiting to be read
-        response = ser.readline().decode('utf-8').strip()
-        print(f'[log] printer output, dumping: {response}')
+        try:
+            raw_data = ser.readline()
+            # Try UTF-8 first, fallback to latin-1 (which can decode any byte)
+            try:
+                response = raw_data.decode('utf-8').strip()
+            except UnicodeDecodeError:
+                # Fallback to latin-1 which can decode any byte sequence
+                response = raw_data.decode('latin-1', errors='ignore').strip()
+            print(f'[log] printer output, dumping: {response}')
+        except Exception as e:
+            # If decoding completely fails, just skip this line
+            print(f'[log] error dumping printer output: {e}')
+            break
 
 def get_current_position(ser):
     """
@@ -103,10 +126,19 @@ def get_current_position(ser):
     time.sleep(0.1)  # Initial delay for command processing
     # Parse printer's response
     while True:
-        response = ser.readline().decode('utf-8').strip()
-        print(f'[log] printer response: {response}')
-        if response.startswith('X:'):
-            break
+        try:
+            raw_data = ser.readline()
+            # Try UTF-8 first, fallback to latin-1 (which can decode any byte)
+            try:
+                response = raw_data.decode('utf-8').strip()
+            except UnicodeDecodeError:
+                # Fallback to latin-1 which can decode any byte sequence
+                response = raw_data.decode('latin-1', errors='ignore').strip()
+            print(f'[log] printer response: {response}')
+            if response.startswith('X:'):
+                break
+        except Exception as e:
+            print(f'[log] decode error: {e}')
         time.sleep(0.1)
     
     position = {}
